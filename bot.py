@@ -634,7 +634,7 @@ async def remove_credits_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
 PORT = 10000
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_SECRET = "YourSecretToken123"
-WEBHOOK_URL = "https://your-app-name.onrender.com" + WEBHOOK_PATH
+WEBHOOK_URL = "https://link-shortener-wi3k.onrender.com" + WEBHOOK_PATH
 
 async def handle_webhook(request):
     """Handle incoming Telegram updates"""
