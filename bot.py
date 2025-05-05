@@ -56,12 +56,6 @@ if stats_collection.count_documents({}) == 0:
         'total_credits_used': 0
     })
 
-# Webhook configuration
-PORT = int(os.environ.get('PORT', 5000))
-WEBHOOK_PATH = f"/{os.environ.get('WEBHOOK_PATH', 'webhook')}"
-WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', 'YourSecretToken123')
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '') + WEBHOOK_PATH
-
 # Force join configuration
 REQUIRED_CHANNELS = ["megahubbots"]
 
@@ -633,8 +627,14 @@ async def remove_credits_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
 # ==============================================
-# Webhook Setup
+# Webhook Setup (Updated)
 # ==============================================
+
+# Hardcoded webhook configuration
+PORT = 10000
+WEBHOOK_PATH = "/webhook"
+WEBHOOK_SECRET = "YourSecretToken123"
+WEBHOOK_URL = "https://your-app-name.onrender.com" + WEBHOOK_PATH
 
 async def handle_webhook(request):
     """Handle incoming Telegram updates"""
@@ -653,30 +653,6 @@ async def handle_webhook(request):
 async def health_check(request):
     """Health check endpoint for Render/Koyeb"""
     return web.Response(text="OK")
-
-async def setup_webhook(application):
-    """Configure webhook settings"""
-    await application.bot.set_webhook(
-        url=WEBHOOK_URL,
-        secret_token=WEBHOOK_SECRET,
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES
-    )
-    logger.info(f"Webhook configured at {WEBHOOK_URL}")
-
-async def run_webhook():
-    """Run the bot in webhook mode"""
-    app = web.Application()
-    app.router.add_post(WEBHOOK_PATH, handle_webhook)
-    app.router.add_get('/', health_check)
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
-    await site.start()
-    
-    logger.info(f"Server running on port {PORT}")
-    await asyncio.Event().wait()  # Run forever
 
 
 # ==============================================
@@ -729,30 +705,62 @@ def setup_handlers(application):
     # Add callback handler for membership verification
     application.add_handler(CallbackQueryHandler(verify_membership, pattern="^verify_membership$"))
 
-async def run_polling():
-    """Run the bot in polling mode"""
-    await application.run_polling()
-
-async def main():
-    """Main entry point for the bot"""
+async def run_application():
+    """Run the bot in appropriate mode based on environment"""
     global application
     application = Application.builder().token(CONFIG['token']).build()
     
     # Setup all handlers
     setup_handlers(application)
     
-    # Determine run mode based on environment
-    if os.environ.get('WEBHOOK_MODE', 'false').lower() == 'true':
+    # Initialize the application
+    await application.initialize()
+    
+    if os.environ.get('RENDER_EXTERNAL_HOSTNAME'):
         logger.info("🌐 Running in webhook mode")
-        await setup_webhook(application)
-        await run_webhook()
+        
+        # Set up webhook
+        await application.bot.set_webhook(
+            url=WEBHOOK_URL,
+            secret_token=WEBHOOK_SECRET,
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
+        )
+        
+        # Create web server
+        app = web.Application()
+        app.router.add_post(WEBHOOK_PATH, handle_webhook)
+        app.router.add_get('/', health_check)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', PORT)
+        await site.start()
+        
+        logger.info(f"🚀 Server running on port {PORT}")
+        logger.info(f"✅ Webhook ready at {WEBHOOK_URL}")
+        
+        # Keep the application running
+        while True:
+            await asyncio.sleep(3600)
     else:
         logger.info("🔄 Running in polling mode")
-        await run_polling()
+        await application.start()
+        await application.updater.start_polling()
+        
+        # Run until interrupted
+        while True:
+            await asyncio.sleep(3600)
+    
+    # Cleanup when stopped
+    await application.stop()
+    await application.shutdown()
 
 if __name__ == '__main__':
     try:
-        asyncio.run(main())
+        asyncio.run(run_application())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
     except Exception as e:
         logger.error(f"Bot crashed: {e}")
         raise
