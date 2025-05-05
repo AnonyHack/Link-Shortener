@@ -16,6 +16,7 @@ from telegram.ext import (
 )
 from pymongo import MongoClient
 from typing import Dict, Any
+from aiohttp import web
 
 # Load environment variables
 load_dotenv()
@@ -54,6 +55,12 @@ if stats_collection.count_documents({}) == 0:
         'total_urls_created': 0,
         'total_credits_used': 0
     })
+
+# Webhook configuration
+PORT = int(os.environ.get('PORT', 5000))
+WEBHOOK_PATH = f"/{os.environ.get('WEBHOOK_PATH', 'webhook')}"
+WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', 'YourSecretToken123')
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '') + WEBHOOK_PATH
 
 # Force join configuration
 REQUIRED_CHANNELS = ["megahubbots"]
@@ -542,6 +549,8 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
     await update.message.reply_text(stats_msg)
 
+# [Include all other admin commands (broadcast, add_credits_cmd, etc.) 
+# with the same implementation as before, using MongoDB functions]
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Broadcast message to all users (/broadcast command)"""
@@ -623,15 +632,59 @@ async def remove_credits_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
+# ==============================================
+# Webhook Setup
+# ==============================================
+
+async def handle_webhook(request):
+    """Handle incoming Telegram updates"""
+    if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != WEBHOOK_SECRET:
+        return web.Response(status=403)
+    
+    try:
+        data = await request.json()
+        update = Update.de_json(data, application.bot)
+        await application.process_update(update)
+        return web.Response(status=200)
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return web.Response(status=500)
+
+async def health_check(request):
+    """Health check endpoint for Render/Koyeb"""
+    return web.Response(text="OK")
+
+async def setup_webhook(application):
+    """Configure webhook settings"""
+    await application.bot.set_webhook(
+        url=WEBHOOK_URL,
+        secret_token=WEBHOOK_SECRET,
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES
+    )
+    logger.info(f"Webhook configured at {WEBHOOK_URL}")
+
+async def run_webhook():
+    """Run the bot in webhook mode"""
+    app = web.Application()
+    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+    app.router.add_get('/', health_check)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    
+    logger.info(f"Server running on port {PORT}")
+    await asyncio.Event().wait()  # Run forever
+
 
 # ==============================================
 # Bot Setup and Startup
-# ==============================================
+# ==============================================    
 
-def main() -> None:
-    """Start the bot with all handlers configured."""
-    application = Application.builder().token(CONFIG['token']).build()
-    
+def setup_handlers(application):
+    """Configure all bot handlers"""
     # Add conversation handlers
     conv_handler_url = ConversationHandler(
         entry_points=[CommandHandler('short_longurl', short_longurl)],
@@ -640,6 +693,7 @@ def main() -> None:
         },
         fallbacks=[]
     )
+    
     conv_handler_emoji = ConversationHandler(
         entry_points=[CommandHandler('short_emoji', short_emoji)],
         states={
@@ -648,7 +702,6 @@ def main() -> None:
         },
         fallbacks=[]
     )
-    
     conv_handler_stats = ConversationHandler(
         entry_points=[CommandHandler('url_stats', url_stats)],
         states={
@@ -656,8 +709,6 @@ def main() -> None:
         },
         fallbacks=[]
     )
-    
-    
     # Add all handlers with the channel requirement
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('profile', profile))
@@ -677,10 +728,31 @@ def main() -> None:
     
     # Add callback handler for membership verification
     application.add_handler(CallbackQueryHandler(verify_membership, pattern="^verify_membership$"))
+
+async def run_polling():
+    """Run the bot in polling mode"""
+    await application.run_polling()
+
+async def main():
+    """Main entry point for the bot"""
+    global application
+    application = Application.builder().token(CONFIG['token']).build()
     
-    # Start the bot
-    application.run_polling()
-    logger.info("Bot started and running")
+    # Setup all handlers
+    setup_handlers(application)
+    
+    # Determine run mode based on environment
+    if os.environ.get('WEBHOOK_MODE', 'false').lower() == 'true':
+        logger.info("🌐 Running in webhook mode")
+        await setup_webhook(application)
+        await run_webhook()
+    else:
+        logger.info("🔄 Running in polling mode")
+        await run_polling()
 
 if __name__ == '__main__':
-    main()
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        logger.error(f"Bot crashed: {e}")
+        raise
